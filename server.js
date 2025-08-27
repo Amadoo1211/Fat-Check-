@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch'); // npm install node-fetch
+const fetch = require('node-fetch');
 const app = express();
 
 // Middleware
@@ -9,67 +9,47 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Cache simple en mémoire (remplace Redis)
+// Cache simple
 const cache = new Map();
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+const CACHE_TTL = 24 * 60 * 60 * 1000;
 
-// Endpoint pour contourner CORS des APIs
+// Route par défaut
+app.get("/", (req, res) => {
+  res.send("✅ API Fact-Checker en ligne ! Consulte /api/search, /api/proxy ou /api/stats");
+});
+
+// Proxy
 app.get('/api/proxy', async (req, res) => {
   try {
     const { url } = req.query;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL parameter required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL parameter required' });
 
-    // Vérifier le cache
     const cacheKey = `proxy_${url}`;
     const cached = cache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-      console.log('Cache hit for:', url);
       return res.json(cached.data);
     }
 
-    // Appel API
     const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Fact-Checker-Bot/1.0',
-        'Accept': 'application/json'
-      },
+      headers: { 'User-Agent': 'Fact-Checker-Bot/1.0', 'Accept': 'application/json' },
       timeout: 10000
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const data = await response.json();
-    
-    // Mettre en cache
-    cache.set(cacheKey, {
-      data: data,
-      timestamp: Date.now()
-    });
-
+    cache.set(cacheKey, { data, timestamp: Date.now() });
     res.json(data);
 
   } catch (error) {
-    console.error('Proxy error:', error.message);
-    res.status(500).json({ 
-      error: 'Proxy failed', 
-      message: error.message 
-    });
+    res.status(500).json({ error: 'Proxy failed', message: error.message });
   }
 });
 
-// Endpoint pour recherche sécurisée avec rate limiting
+// Recherche
 app.get('/api/search', async (req, res) => {
   try {
     const { query, source } = req.query;
-    
-    if (!query || !source) {
-      return res.status(400).json({ error: 'Query and source required' });
-    }
+    if (!query || !source) return res.status(400).json({ error: 'Query and source required' });
 
     const cacheKey = `search_${source}_${query}`;
     const cached = cache.get(cacheKey);
@@ -78,8 +58,6 @@ app.get('/api/search', async (req, res) => {
     }
 
     let searchUrl = '';
-    
-    // Router vers différentes APIs selon la source
     switch(source) {
       case 'archive':
         searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}&fl[]=identifier,title,description&rows=3&output=json`;
@@ -96,35 +74,20 @@ app.get('/api/search', async (req, res) => {
 
     const response = await fetch(searchUrl, {
       timeout: 8000,
-      headers: {
-        'User-Agent': 'Fact-Checker-Research/1.0'
-      }
+      headers: { 'User-Agent': 'Fact-Checker-Research/1.0' }
     });
-
-    if (!response.ok) {
-      throw new Error(`API returned ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
 
     const data = await response.json();
-    
-    // Cache résultat
-    cache.set(cacheKey, {
-      data: data,
-      timestamp: Date.now()
-    });
-
+    cache.set(cacheKey, { data, timestamp: Date.now() });
     res.json(data);
 
   } catch (error) {
-    console.error('Search error:', error);
-    res.status(500).json({ 
-      error: 'Search failed',
-      message: error.message 
-    });
+    res.status(500).json({ error: 'Search failed', message: error.message });
   }
 });
 
-// Endpoint pour statistiques
+// Stats
 app.get('/api/stats', (req, res) => {
   res.json({
     cacheSize: cache.size,
@@ -134,7 +97,7 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// Nettoyage du cache périodique
+// Nettoyage du cache
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of cache.entries()) {
@@ -142,8 +105,7 @@ setInterval(() => {
       cache.delete(key);
     }
   }
-  console.log(`Cache cleaned, size: ${cache.size}`);
-}, 60 * 60 * 1000); // Toutes les heures
+}, 60 * 60 * 1000);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -153,8 +115,6 @@ app.get('/health', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend fact-checker démarré sur port ${PORT}`);
-  console.log(`📊 Stats disponibles sur /api/stats`);
 });
 
-// Export pour tests
 module.exports = app;
