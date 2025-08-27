@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch'); // Pour les requêtes HTTP depuis le backend
+const fetch = require('node-fetch');
 const app = express();
 
 // Middleware
@@ -15,95 +15,66 @@ const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 heures
 
 // --- Fonctions de Fact-Checking (déplacées ici depuis popup.js) ---
 
-// Fonction pour nettoyer et valider le texte (peut être utile côté backend aussi)
 function cleanText(text) {
   return text.trim().replace(/\s+/g, ' ').substring(0, 8000);
 }
 
-// Extraction intelligente des affirmations
 function extractIntelligentClaims(text) {
   return text.split(/[.!?]+/)
-    .filter(function(s) { return s.trim().length > 25; })
-    .map(function(s) { return s.trim(); })
+    .filter(s => s.trim().length > 25)
+    .map(s => s.trim())
     .slice(0, 3);
 }
 
-// Extraction des mots-clés
 function extractBestKeywords(text) {
   const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'sans', 'qui', 'que', 'est', 'sont', 'été', 'avoir', 'être', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'that', 'this', 'was', 'were', 'has', 'have', 'had']);
-  
   const properNouns = text.match(/\b[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+(?:\s+[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+)*\b/g) || [];
   const dates = text.match(/\b(?:19|20)\d{2}\b/g) || [];
   const numbers = text.match(/\b\d+(?:[.,]\d+)?\b/g) || [];
-  
-  const words = text.toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length > 3 && !stopWords.has(word))
-    .slice(0, 4);
-  
+  const words = text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(word => word.length > 3 && !stopWords.has(word)).slice(0, 4);
   return properNouns.concat(dates, numbers, words).slice(0, 6);
 }
 
-// Calcul de la pertinence
 function calculateRelevance(claim, sourceContent) {
   const claimKeywords = extractBestKeywords(claim);
   const sourceText = sourceContent.toLowerCase();
-  
   let matches = claimKeywords.filter(keyword => sourceText.includes(keyword.toLowerCase()));
-  
   let relevance = matches.length / Math.max(claimKeywords.length, 1);
-  
-  const exactMatches = claimKeywords.filter(keyword =>
-    keyword.length > 4 && sourceText.includes(keyword.toLowerCase())
-  );
-  
+  const exactMatches = claimKeywords.filter(keyword => keyword.length > 4 && sourceText.includes(keyword.toLowerCase()));
   if (exactMatches.length > 0) relevance += 0.2;
-  
   return Math.min(relevance, 1.0);
 }
 
-// Déduplication et classement des sources
 function deduplicateAndRankSources(sources) {
   const seen = new Set();
   const deduplicated = [];
-  
-  sources.forEach(function(source) {
+  sources.forEach(source => {
     const domain = extractDomain(source.url);
     const key = domain + '-' + source.title.substring(0, 30);
-    
     if (!seen.has(key) && deduplicated.length < 10) {
       seen.add(key);
       deduplicated.push(source);
     }
   });
-
-  return deduplicated.sort(function(a, b) {
+  return deduplicated.sort((a, b) => {
     const aScore = (a.isOfficialData ? 100 : 0) + (a.reliability * 100) + (a.relevanceScore || 0) * 50;
     const bScore = (b.isOfficialData ? 100 : 0) + (b.reliability * 100) + (b.relevanceScore || 0) * 50;
     return bScore - aScore;
   });
 }
 
-// Évaluation d'une affirmation avec les sources
 function evaluateClaimWithSources(claimText, sources) {
-  const relevantSources = sources.filter(function(s) {
-    return calculateRelevance(claimText, s.title + ' ' + s.snippet) > 0.2;
-  });
-
+  const relevantSources = sources.filter(s => calculateRelevance(claimText, s.title + ' ' + s.snippet) > 0.2);
   let confidence = 0.30;
-  
   if (relevantSources.length >= 4) confidence += 0.40;
   else if (relevantSources.length >= 3) confidence += 0.30;
   else if (relevantSources.length >= 2) confidence += 0.20;
   else if (relevantSources.length >= 1) confidence += 0.10;
-  
   let status;
   if (confidence >= 0.75) status = 'verified';
   else if (confidence >= 0.55) status = 'partially_verified';
   else if (confidence >= 0.40) status = 'uncertain';
   else status = 'disputed';
-
   return {
     text: claimText,
     confidence: Math.max(0.20, Math.min(0.90, confidence)),
@@ -112,7 +83,6 @@ function evaluateClaimWithSources(claimText, sources) {
   };
 }
 
-// Extraction du domaine d'une URL
 function extractDomain(url) {
   try {
     return new URL(url).hostname.replace('www.', '');
@@ -121,7 +91,6 @@ function extractDomain(url) {
   }
 }
 
-// Fonctions d'analyse de contenu
 function isStrongOpinionContent(text) {
   const opinionPatterns = [
     /\b(meilleur|meilleure|pire|plus beau|plus belle|plus grand|plus petit)\b.*\b(monde|univers|planète|terre)\b/i,
@@ -144,51 +113,42 @@ function hasSpeculativeLanguage(text) {
   return /\b(peut-être|probablement|semble|paraît|suppose|présume|vraisemblablement|apparemment|sans doute)\b/i.test(text);
 }
 
-// Calcul du score de confiance amélioré
 function calculateEnhancedConfidenceScore(claims, sources, originalText) {
   let baseScore = 30;
   let sourceScore = 0;
   let qualityBonus = 0;
   let penalties = 0;
-
   const isOpinion = isStrongOpinionContent(originalText);
   const isSpeculative = hasSpeculativeLanguage(originalText);
   const isComparative = hasComparativeLanguage(originalText);
   const isSubjective = hasSubjectiveLanguage(originalText);
-
   const encyclopediaSources = sources.filter(s => s.sourceCategory === 'encyclopedia');
   const databaseSources = sources.filter(s => s.sourceCategory === 'database');
   const searchEngineSources = sources.filter(s => s.sourceCategory === 'search_engine');
   const archiveSources = sources.filter(s => s.sourceCategory === 'archive');
   const academicSources = sources.filter(s => s.sourceCategory === 'academic');
   const referenceSources = sources.filter(s => s.sourceCategory === 'reference');
-  
   sourceScore += encyclopediaSources.length * 12;
   sourceScore += databaseSources.length * 15;
   sourceScore += searchEngineSources.length * 8;
   sourceScore += archiveSources.length * 10;
   sourceScore += academicSources.length * 18;
   sourceScore += referenceSources.length * 8;
-  
   const totalSources = sources.length;
   if (totalSources >= 6) qualityBonus = 25;
   else if (totalSources >= 4) qualityBonus = 20;
   else if (totalSources >= 3) qualityBonus = 15;
   else if (totalSources >= 2) qualityBonus = 10;
   else if (totalSources >= 1) qualityBonus = 5;
-  
   const sourceTypes = [encyclopediaSources, databaseSources, academicSources, archiveSources].filter(arr => arr.length > 0);
   if (sourceTypes.length >= 3) qualityBonus += 10;
-  
   if (isOpinion) penalties += 30;
   if (isSubjective) penalties += 20;
   if (isComparative) penalties += 15;
   if (isSpeculative) penalties += 10;
   if (totalSources === 0) penalties += 25;
-  
   const rawScore = baseScore + sourceScore + qualityBonus - penalties;
   const finalScore = Math.max(20, Math.min(90, rawScore)) / 100;
-  
   const details = {
     baseScore: baseScore,
     sourceScore: sourceScore,
@@ -206,7 +166,6 @@ function calculateEnhancedConfidenceScore(claims, sources, originalText) {
       total: totalSources
     }
   };
-
   const contentAnalysis = {
     isOpinion: isOpinion,
     isSubjective: isSubjective,
@@ -214,31 +173,22 @@ function calculateEnhancedConfidenceScore(claims, sources, originalText) {
     isSpeculative: isSpeculative,
     contentType: isOpinion ? 'OPINION' : isSubjective ? 'SUBJECTIF' : 'FACTUEL'
   };
-
   console.log('Scoring 6 sources:', { details: details, content: contentAnalysis });
   return { finalScore: finalScore, details: details, contentAnalysis: contentAnalysis };
 }
 
-// Fonctions de recherche d'API (maintenant appelées depuis le backend)
-
 async function searchWikipediaAdvanced(claimText) {
   const sources = [];
   const languages = ['fr', 'en'];
-  const promises = [];
-  
   for (const lang of languages) {
     const keywords = extractBestKeywords(claimText);
     if (keywords.length === 0) continue;
-    
     const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(keywords.join(' '))}&format=json&origin=*&srlimit=3`;
-    
     try {
       const response = await fetch(searchUrl, { timeout: 5000 });
       const data = await response.json();
       if (data.query && data.query.search) {
-        const articlePromises = data.query.search.slice(0, 2).map(article =>
-          fetchWikipediaContent(lang, article.title, claimText)
-        );
+        const articlePromises = data.query.search.slice(0, 2).map(article => fetchWikipediaContent(lang, article.title, claimText));
         const articles = await Promise.all(articlePromises);
         articles.filter(a => a !== null).forEach(source => sources.push(source));
       }
@@ -251,15 +201,12 @@ async function searchWikipediaAdvanced(claimText) {
 
 async function fetchWikipediaContent(lang, title, originalClaim) {
   const summaryUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-  
   try {
     const response = await fetch(summaryUrl, { timeout: 5000 });
     if (!response.ok) throw new Error('Not found or API error');
-    
     const data = await response.json();
     if (data.extract && data.extract.length > 50) {
       const relevanceScore = calculateRelevance(originalClaim, data.title + ' ' + data.extract);
-      
       if (relevanceScore > 0.3) {
         return {
           title: `Wikipedia (${lang.toUpperCase()}): ${data.title}`,
@@ -280,9 +227,7 @@ async function fetchWikipediaContent(lang, title, originalClaim) {
 async function searchWikidata(claimText) {
   const keywords = extractBestKeywords(claimText);
   if (keywords.length === 0) return [];
-  
   const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(keywords.join(' '))}&language=fr&format=json&origin=*&limit=3`;
-  
   try {
     const response = await fetch(searchUrl, { timeout: 5000 });
     const data = await response.json();
@@ -305,14 +250,11 @@ async function searchWikidata(claimText) {
 async function searchDuckDuckGo(claimText) {
   const keywords = extractBestKeywords(claimText);
   if (keywords.length === 0) return [];
-  
   const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(keywords.join(' '))}&format=json&no_html=1&skip_disambig=1`;
-  
   try {
     const response = await fetch(searchUrl, { timeout: 5000 });
     const data = await response.json();
     const sources = [];
-    
     if (data.Abstract && data.Abstract.length > 50) {
       sources.push({
         title: `DuckDuckGo: ${data.Heading || "Résultat instantané"}`,
@@ -335,7 +277,6 @@ async function searchArchiveOrg(query) {
     const response = await fetch(searchUrl, { timeout: 8000 });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
-    
     const sources = [];
     if (data.response && data.response.docs) {
       data.response.docs.slice(0, 2).forEach(doc => {
@@ -361,12 +302,10 @@ async function searchPubMed(query) {
   try {
     const hasScientificTerms = /\b(maladie|virus|traitement|médical|recherche|étude|scientifique|découverte|cancer|vaccin|radioactivité|curie|becquerel)\b/i.test(query);
     if (!hasScientificTerms) return [];
-
     const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmode=json&retmax=3`;
     const response = await fetch(searchUrl, { timeout: 8000 });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
-    
     const sources = [];
     if (data.esearchresult && data.esearchresult.idlist && data.esearchresult.idlist.length > 0) {
       sources.push({
@@ -389,12 +328,10 @@ async function searchOpenLibrary(query) {
   try {
     const hasBookTerms = /\b(livre|auteur|écrivain|roman|poésie|littérature|publié|édition|shakespeare|hugo|voltaire)\b/i.test(query);
     if (!hasBookTerms) return [];
-
     const searchUrl = `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=3`;
     const response = await fetch(searchUrl, { timeout: 8000 });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
-    
     const sources = [];
     if (data.docs && data.docs.length > 0) {
       data.docs.slice(0, 2).forEach(book => {
@@ -416,7 +353,6 @@ async function searchOpenLibrary(query) {
   }
 }
 
-// Fonction principale de vérification de faits (maintenant sur le backend)
 async function performComprehensiveFactCheck(text) {
   const results = {
     overallConfidence: 0,
@@ -425,28 +361,20 @@ async function performComprehensiveFactCheck(text) {
     scoringDetails: {},
     contentAnalysis: {}
   };
-
   try {
     const cleanedText = cleanText(text);
     const claims = extractIntelligentClaims(cleanedText);
     let allSources = [];
-    
     const sourcePromises = [];
-    
-    // Pour chaque affirmation, lance toutes les recherches d'API
     for (const claimText of claims) {
       console.log("Recherche 6 sources pour: " + claimText.substring(0, 50) + "...");
-      
       sourcePromises.push(searchWikipediaAdvanced(claimText));
       sourcePromises.push(searchWikidata(claimText));
       sourcePromises.push(searchDuckDuckGo(claimText));
-      // Utilisez directement les fonctions de recherche sans passer par /api/search du backend
       sourcePromises.push(searchArchiveOrg(claimText));
       sourcePromises.push(searchPubMed(claimText));
       sourcePromises.push(searchOpenLibrary(claimText));
     }
-
-    // Attendre que toutes les promesses de recherche soient résolues
     const sourceArrays = await Promise.all(sourcePromises);
     sourceArrays.forEach(sourceArray => {
       if (sourceArray && Array.isArray(sourceArray)) {
@@ -455,99 +383,77 @@ async function performComprehensiveFactCheck(text) {
         });
       }
     });
-
     results.sources = deduplicateAndRankSources(allSources);
-    
     const scoringAnalysis = calculateEnhancedConfidenceScore(claims, results.sources, cleanedText);
     results.overallConfidence = scoringAnalysis.finalScore;
     results.scoringDetails = scoringAnalysis.details;
     results.contentAnalysis = scoringAnalysis.contentAnalysis;
-
-    results.claims = claims.map(claimText =>
-      evaluateClaimWithSources(claimText, results.sources)
-    );
-
+    results.claims = claims.map(claimText => evaluateClaimWithSources(claimText, results.sources));
     return results;
-
   } catch (error) {
     console.error('Erreur fact-checking côté backend:', error);
-    throw error; // Propager l'erreur pour qu'elle soit gérée par la route
+    throw error;
   }
 }
 
 // --- Routes de l'API ---
 
-// Route par défaut
 app.get("/", (req, res) => {
   res.send("✅ API Fact-Checker en ligne ! Consulte /verify, /api/proxy ou /api/stats");
 });
 
-// Nouvelle route pour la vérification de faits complète
 app.post('/verify', async (req, res) => {
   try {
     const { text } = req.body;
     if (!text || text.length < 10) {
       return res.status(400).json({ error: 'Le texte est requis et doit contenir au moins 10 caractères.' });
     }
-
-    const cacheKey = `full_verify_${text.substring(0, 100)}`; // Clé de cache basée sur le début du texte
+    const cacheKey = `full_verify_${text.substring(0, 100)}`;
     const cached = cache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
       console.log('Réponse de vérification servie depuis le cache.');
       return res.json(cached.data);
     }
-
     const verificationResult = await performComprehensiveFactCheck(text);
     cache.set(cacheKey, { data: verificationResult, timestamp: Date.now() });
     res.json(verificationResult);
-
   } catch (error) {
     console.error('Erreur dans la route /verify:', error);
     res.status(500).json({ error: 'Échec de la vérification de faits', message: error.message });
   }
 });
 
-// Proxy (utile si vous avez besoin de contourner les CORS pour certaines API futures)
 app.get('/api/proxy', async (req, res) => {
   try {
     const { url } = req.query;
     if (!url) return res.status(400).json({ error: 'URL parameter required' });
-
     const cacheKey = `proxy_${url}`;
     const cached = cache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
       return res.json(cached.data);
     }
-
     const response = await fetch(url, {
       headers: { 'User-Agent': 'Fact-Checker-Bot/1.0', 'Accept': 'application/json' },
       timeout: 10000
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
     const data = await response.json();
     cache.set(cacheKey, { data, timestamp: Date.now() });
     res.json(data);
-
   } catch (error) {
     res.status(500).json({ error: 'Proxy failed', message: error.message });
   }
 });
 
-// Ancienne route /api/search (maintenant intégrée dans /verify, mais gardée pour référence ou si vous avez d'autres usages)
-// J'ai renommé les fonctions `searchArchiveOrg`, `searchPubMed`, `searchOpenLibrary` pour qu'elles puissent être appelées directement.
-// Si vous n'avez plus besoin de cette route /api/search séparée, vous pouvez la supprimer.
 app.get('/api/search', async (req, res) => {
   try {
     const { query, source } = req.query;
     if (!query || !source) return res.status(400).json({ error: 'Query and source required' });
-
     const cacheKey = `search_${source}_${query}`;
     const cached = cache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
       return res.json(cached.data);
     }
-
     let result = [];
     switch(source) {
       case 'archive':
@@ -559,30 +465,26 @@ app.get('/api/search', async (req, res) => {
       case 'openlibrary':
         result = await searchOpenLibrary(query);
         break;
-      case 'wikipedia': // Ajouté pour être complet si vous vouliez tester individuellement
+      case 'wikipedia':
         result = await searchWikipediaAdvanced(query);
         break;
-      case 'wikidata': // Ajouté
+      case 'wikidata':
         result = await searchWikidata(query);
         break;
-      case 'duckduckgo': // Ajouté
+      case 'duckduckgo':
         result = await searchDuckDuckGo(query);
         break;
       default:
         return res.status(400).json({ error: 'Invalid source' });
     }
-
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
     res.json(result);
-
   } catch (error) {
     console.error('Search failed in /api/search:', error);
     res.status(500).json({ error: 'Search failed', message: error.message });
   }
 });
 
-
-// Stats
 app.get('/api/stats', (req, res) => {
   res.json({
     cacheSize: cache.size,
@@ -592,7 +494,6 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// Nettoyage du cache
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of cache.entries()) {
@@ -600,9 +501,8 @@ setInterval(() => {
       cache.delete(key);
     }
   }
-}, 60 * 60 * 1000); // Nettoyage toutes les heures
+}, 60 * 60 * 1000);
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: Date.now() });
 });
